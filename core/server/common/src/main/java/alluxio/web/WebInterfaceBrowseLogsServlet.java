@@ -17,12 +17,8 @@ import alluxio.PropertyKey;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
 
 import javax.annotation.concurrent.ThreadSafe;
 import javax.servlet.ServletException;
@@ -39,12 +35,6 @@ public final class WebInterfaceBrowseLogsServlet extends HttpServlet {
 
   private final String mBrowseJsp;
   private final String mViewJsp;
-  private static final FilenameFilter LOG_FILE_FILTER = new FilenameFilter() {
-    @Override
-    public boolean accept(File dir, String name) {
-      return name.toLowerCase().endsWith(".log");
-    }
-  };
 
   /**
    * Creates a new instance of {@link WebInterfaceBrowseLogsServlet}.
@@ -63,6 +53,7 @@ public final class WebInterfaceBrowseLogsServlet extends HttpServlet {
    * @param file the local file to display
    * @param request the {@link HttpServletRequest} object
    * @param offset where the file starts to display
+   * @throws IOException if an I/O error occurs
    */
   private void displayLocalFile(File file, HttpServletRequest request, long offset)
       throws IOException {
@@ -73,16 +64,16 @@ public final class WebInterfaceBrowseLogsServlet extends HttpServlet {
       byte[] data = new byte[len];
       long skipped = is.skip(offset);
       if (skipped < 0) {
-        // Nothing was skipped.
+        // nothing was skipped
         fileData = "Unable to traverse to offset; is file empty?";
       } else if (skipped < offset) {
-        // Couldn't skip all the way to offset.
+        // couldn't skip all the way to offset
         fileData = "Unable to traverse to offset; is offset larger than the file?";
       } else {
-        // Read may not read up to len, so only convert what was read.
+        // read may not read up to len, so only convert what was read
         int read = is.read(data, 0, len);
         if (read < 0) {
-          // Stream couldn't read anything, skip went to EOF?
+          // stream couldn't read anything, skip went to EOF?
           fileData = "Unable to read file";
         } else {
           fileData = WebUtils.convertByteArrayToStringWithoutEscape(data, 0, read);
@@ -100,6 +91,7 @@ public final class WebInterfaceBrowseLogsServlet extends HttpServlet {
    * @param request the {@link HttpServletRequest} object
    * @param response the {@link HttpServletResponse} object
    * @throws ServletException if the target resource throws this exception
+   * @throws IOException if the target resource throws this exception
    */
   @Override
   protected void doGet(HttpServletRequest request, HttpServletResponse response)
@@ -117,48 +109,6 @@ public final class WebInterfaceBrowseLogsServlet extends HttpServlet {
     String requestFile = request.getParameter("path");
 
     if (requestFile == null || requestFile.isEmpty()) {
-      // List all log files in the log/ directory.
-
-      List<UIFileInfo> fileInfos = new ArrayList<>();
-      File[] logFiles = logsDir.listFiles(LOG_FILE_FILTER);
-      if (logFiles != null) {
-        for (File logFile : logFiles) {
-          String logFileName = logFile.getName();
-          fileInfos.add(new UIFileInfo(new UIFileInfo.LocalFileInfo(logFileName, logFileName,
-                  logFile.length(), UIFileInfo.LocalFileInfo.EMPTY_CREATION_TIME,
-                  logFile.lastModified(), logFile.isDirectory())));
-        }
-      }
-      Collections.sort(fileInfos, UIFileInfo.PATH_STRING_COMPARE);
-      request.setAttribute("nTotalFile", fileInfos.size());
-
-      // URL can not determine offset and limit, let javascript in jsp determine and redirect.
-      if (request.getParameter("offset") == null && request.getParameter("limit") == null) {
-        getServletContext().getRequestDispatcher(mBrowseJsp).forward(request, response);
-        return;
-      }
-
-      try {
-        int offset = Integer.parseInt(request.getParameter("offset"));
-        int limit = Integer.parseInt(request.getParameter("limit"));
-        List<UIFileInfo> sub = fileInfos.subList(offset, offset + limit);
-        request.setAttribute("fileInfos", sub);
-      } catch (NumberFormatException e) {
-        request.setAttribute("fatalError",
-                "Error: offset or limit parse error, " + e.getLocalizedMessage());
-        getServletContext().getRequestDispatcher(mBrowseJsp).forward(request, response);
-        return;
-      } catch (IndexOutOfBoundsException e) {
-        request.setAttribute("fatalError",
-                "Error: offset or offset + limit is out of bound, " + e.getLocalizedMessage());
-        getServletContext().getRequestDispatcher(mBrowseJsp).forward(request, response);
-        return;
-      } catch (IllegalArgumentException e) {
-        request.setAttribute("fatalError", e.getLocalizedMessage());
-        getServletContext().getRequestDispatcher(mBrowseJsp).forward(request, response);
-        return;
-      }
-
       getServletContext().getRequestDispatcher(mBrowseJsp).forward(request, response);
     } else {
       // Request a specific log file.

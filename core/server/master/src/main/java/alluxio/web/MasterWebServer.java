@@ -57,8 +57,14 @@ public final class MasterWebServer extends WebServer {
         "/configuration");
     mWebAppContext
         .addServlet(new ServletHolder(new WebInterfaceBrowseServlet(masterProcess)), "/browse");
+    mWebAppContext.addServlet(new ServletHolder(
+        new WebInterfaceBrowseLogAjaxServlet()), "/browse/browseLog.ajax");
+    mWebAppContext.addServlet(new ServletHolder(
+        new WebInterfaceBrowseAjaxServlet(masterProcess)), "/browse/jumpPath.ajax");
     mWebAppContext
         .addServlet(new ServletHolder(new WebInterfaceMemoryServlet(masterProcess)), "/memory");
+    mWebAppContext.addServlet(new ServletHolder(
+        new WebInterfaceMemoryAjaxServlet(masterProcess)), "/memory/getFiles.ajax");
     mWebAppContext.addServlet(new ServletHolder(new WebInterfaceDependencyServlet(masterProcess)),
         "/dependency");
     mWebAppContext.addServlet(new ServletHolder(
