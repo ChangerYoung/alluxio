@@ -257,6 +257,8 @@ public class PropertyKey {
   public static final PropertyKey MASTER_RETRY =
       create(Name.MASTER_RETRY, String.format("${%s}", Name.USER_RPC_RETRY_MAX_NUM_RETRY));
   public static final PropertyKey MASTER_RPC_PORT = create(Name.MASTER_RPC_PORT, 19998);
+  public static final PropertyKey MASTER_STARTUP_LAZY_CONSISTENCY_CHECK_ENABLED = create(
+          Name.MASTER_STARTUP_LAZY_CONSISTENCY_CHECK_ENABLED, true);
   public static final PropertyKey MASTER_STARTUP_CONSISTENCY_CHECK_ENABLED =
       create(Name.MASTER_STARTUP_CONSISTENCY_CHECK_ENABLED, true);
   public static final PropertyKey MASTER_TIERED_STORE_GLOBAL_LEVEL0_ALIAS =
@@ -857,6 +859,8 @@ public class PropertyKey {
     public static final String MASTER_PRINCIPAL = "alluxio.master.principal";
     public static final String MASTER_RETRY = "alluxio.master.retry";
     public static final String MASTER_RPC_PORT = "alluxio.master.port";
+    public static final String MASTER_STARTUP_LAZY_CONSISTENCY_CHECK_ENABLED =
+            "alluxio.master.startup.lazy.consistency.check.enabled";
     public static final String MASTER_STARTUP_CONSISTENCY_CHECK_ENABLED =
         "alluxio.master.startup.consistency.check.enabled";
     public static final String MASTER_TIERED_STORE_GLOBAL_LEVEL0_ALIAS =
