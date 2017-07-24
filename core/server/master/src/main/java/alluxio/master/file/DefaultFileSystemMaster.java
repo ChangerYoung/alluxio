@@ -856,6 +856,84 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
   }
 
   /**
+   *
+   * @param inode the inode to check
+   * @param path the current path associated with the inode
+   * @param ufs the under file system
+   * @param ufsPath the under file system path
+   * @return true if the path is consistent, false otherwise
+   * @throws IOException if an error occurs interacting with the under storage
+   * @throws InvalidPathException if the path is not well formed
+   * @throws FileDoesNotExistException if the path cannot be found in the Alluxio inode tree
+   */
+  private boolean checkDirectoryConsistency(Inode inode, AlluxioURI path, UnderFileSystem ufs,
+                                            String ufsPath)
+      throws IOException, InvalidPathException, FileDoesNotExistException {
+    boolean isConsistency = true;
+    UfsStatus[] ufsStatus = ufs.listStatus(ufsPath);
+    // 存储inode下的子节点对应的文件信息
+    Map<String, FileInfo> fileInfoMap = new HashMap<String, FileInfo>();
+    // 只读取,不加载元数据，所以使用读锁即可
+    try (LockedInodePath inodePath = mInodeTree.lockInodePath(path, InodeTree.LockMode.READ)) {
+      TempInodePathForDescendant tempInodePath = new TempInodePathForDescendant(inodePath);
+      Set<Inode<?>> children = ((InodeDirectory) inode).getChildren();
+      // 先比较大小,如果不一致则直接返回不一致，不进一步检查
+      if (children.size() == ufsStatus.length) {
+        for (Inode<?> child : children) {
+          child.lockReadAndCheckParent(inode);
+          try {
+            // the path to child for getPath should already be locked.
+            tempInodePath.setDescendant(child, mInodeTree.getPath(child));
+            FileInfo fileInfo = getFileInfoInternal(tempInodePath);
+            fileInfoMap.put(fileInfo.getName(), fileInfo);
+          } catch (AccessControlException e) {
+            LOG.error(e.getMessage());
+          } finally {
+            child.unlockRead();
+          }
+        }
+      } else {
+        LOG.info("[bdp-log] ufs和alluxio 文件夹 子节点数不一致。" + "alluxio size："
+            + children.size() + ", ufs " + "size：" + ufsStatus.length);
+        isConsistency = false;
+      }
+    }
+    // 如果一致，进行进一步检查
+    if (isConsistency) {
+      for (UfsStatus us : ufsStatus) {
+        if (fileInfoMap.containsKey(us.getName())) {
+          FileInfo fileInfo = fileInfoMap.get(us.getName());
+          if (!fileInfo.isFolder() && us.isFile()) {
+            UfsFileStatus ufsFileStatus = (UfsFileStatus) us;
+            if (ufsFileStatus.getContentLength() != fileInfo.getLength()
+                || (hasAnyBlockCached(fileInfo.getFileBlockInfos())
+                && fileInfo.getUfsLastModificationTimeMs() != 0
+                && ufsFileStatus.getLastModifiedTime() > fileInfo.getUfsLastModificationTimeMs())) {
+              LOG.info("[bdp-log] 文件校验未通过 , Path = " + ufsPath
+                  + " , FileSize = ["
+                  + fileInfo.getLength() + " , " + ufsFileStatus.getContentLength() + "]"
+                  + " , curUfsModificationTime = "
+                  + CommonUtils.convertMsToDate(ufsFileStatus.getLastModifiedTime())
+                  + " , UfsModificationTime = "
+                  + CommonUtils.convertMsToDate(fileInfo.getUfsLastModificationTimeMs())
+              );
+              return false;
+            } else {
+              return true;
+            }
+          }
+        } else {
+          isConsistency = false;
+          break;
+        }
+      }
+    } else {
+      LOG.info("[bdp-log] 没有进一步比较");
+    }
+    return isConsistency;
+  }
+
+  /**
    * Checks if a path is consistent between Alluxio and the underlying storage.
    * <p>
    * A path without a backing under storage is always consistent.
@@ -879,18 +957,50 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
     UnderFileSystem ufs = resolution.getUfs();
     String ufsPath = resolution.getUri().getPath();
     if (ufs == null) {
+      LOG.info("[bdp-log] ufs is null , path " + path);
       return true;
     }
     if (!inode.isPersisted()) {
+      LOG.info("[bdp-log] ufs = " + ufs + " , " + ufsPath + " , exists = " + ufs.exists(ufsPath));
       return !ufs.exists(ufsPath);
     }
     // TODO(calvin): Evaluate which other metadata fields should be validated.
     if (inode.isDirectory()) {
-      return ufs.isDirectory(ufsPath);
+      if (ufs.isDirectory(ufsPath)) {
+        if (!checkDirectoryConsistency(inode, path, ufs, ufsPath)) {
+          LOG.info("[bdp-log] 文件夹校验未通过 , Path = " + ufsPath);
+          return false;
+        } else {
+          return true;
+        }
+      } else {
+        LOG.info("[bdp-log] 文件夹校验未通过 , Path = " + ufsPath + " ufs.isDirectory() = false");
+        return false;
+      }
     } else {
       InodeFile file = (InodeFile) inode;
-      return ufs.isFile(ufsPath)
-          && ufs.getFileStatus(ufsPath).getContentLength() == file.getLength();
+      if (ufs.isFile(ufsPath)) {
+        UfsFileStatus ufsFileStatus = ufs.getFileStatus(ufsPath);
+        if (ufsFileStatus.getContentLength() != file.getLength()
+            || (hasAnyBlockCached(mBlockMaster.getBlockInfoList(file.getBlockIds()))
+            && file.getUfsLastModificationTimeMs() != 0
+            && ufsFileStatus.getLastModifiedTime() > file.getUfsLastModificationTimeMs())) {
+          LOG.info("[bdp-log] 文件校验未通过 , Path = " + ufsPath
+              + " , FileSize = ["
+              + file.getLength() + " , " + ufsFileStatus.getContentLength() + "]"
+              + " , curUfsModificationTime = "
+              + CommonUtils.convertMsToDate(ufsFileStatus.getLastModifiedTime())
+              + " , UfsModificationTime = "
+              + CommonUtils.convertMsToDate(file.getUfsLastModificationTimeMs())
+          );
+          return false;
+        } else {
+          return true;
+        }
+      } else {
+        LOG.info("[bdp-log] 文件校验未通过 , Path = " + ufsPath + " , isFile = false");
+        return false;
+      }
     }
   }
 
@@ -905,6 +1015,21 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
       // Even readonly mount points should be able to complete a file, for UFS reads in CACHE mode.
       completeFileAndJournal(inodePath, options, journalContext);
     }
+  }
+
+  private boolean hasAnyBlockCached(List list) {
+    for (Object object : list) {
+      BlockInfo blockInfo = null;
+      if (object instanceof FileBlockInfo) {
+        blockInfo = ((FileBlockInfo) object).getBlockInfo();
+      } else if (object instanceof BlockInfo) {
+        blockInfo = (BlockInfo) object;
+      }
+      if (blockInfo.getLocations().size() > 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
