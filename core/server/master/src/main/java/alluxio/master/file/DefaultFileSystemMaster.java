@@ -152,11 +152,9 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.atomic.AtomicLong;
 
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.NotThreadSafe;
-
 
 /**
  * The master that handles all file system metadata management.
@@ -1633,7 +1631,7 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
    * @param inodePath the path of the directory
    * @param options method options
    * @param journalContext the journal context
-   * @return an {@link InodeTree.CreatePathResult} representing the
+   * @return an {@link alluxio.master.file.meta.InodeTree.CreatePathResult} representing the
    *         modified inodes and created inodes during path creation
    * @throws InvalidPathException when the path is invalid
    * @throws FileAlreadyExistsException when there is already a file at path
@@ -2349,7 +2347,7 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
     }
 
     if (!inodePath.fullPathExists()) {
-      return ;
+      return;
     }
 
     if (Configuration.getBoolean(PropertyKey.MASTER_STARTUP_LAZY_CONSISTENCY_CHECK_ENABLED)) {
@@ -2422,10 +2420,11 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
   private void syncDelete(LockedInodePath inodePath,
                                 LoadMetadataOptions options, JournalContext journalContext) {
     try {
-      freeAndJournal(inodePath,FreeOptions.defaults(), journalContext);
+      freeAndJournal(inodePath, FreeOptions.defaults(), journalContext);
       LOG.info("[extends log] loadMetadataIfNotExistAndJournal Inode = "
               + inodePath.getUri() + " , path = " + inodePath + " , isFree.");
-      mInodeTree.deleteInode(inodePath, System.currentTimeMillis(),DeleteOptions.defaults() , journalContext);
+      mInodeTree.deleteInode(inodePath, System.currentTimeMillis(), DeleteOptions.defaults(),
+          journalContext);
       long fileId = inodePath.getInode().getId();
       long opTimeMs = System.currentTimeMillis();
       DeleteFileEntry deleteFile = DeleteFileEntry.newBuilder()
@@ -2439,7 +2438,6 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
       throw new RuntimeException(e);
     }
   }
-
 
   @Override
   public void mount(AlluxioURI alluxioPath, AlluxioURI ufsPath, MountOptions options)
