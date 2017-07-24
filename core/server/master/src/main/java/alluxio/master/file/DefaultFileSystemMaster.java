@@ -1631,7 +1631,7 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
    * @param inodePath the path of the directory
    * @param options method options
    * @param journalContext the journal context
-   * @return an {@link InodeTree.CreatePathResult} representing the
+   * @return an {@link alluxio.master.file.meta.InodeTree.CreatePathResult} representing the
    *         modified inodes and created inodes during path creation
    * @throws InvalidPathException when the path is invalid
    * @throws FileAlreadyExistsException when there is already a file at path
