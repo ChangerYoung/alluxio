@@ -934,9 +934,8 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
       if (ufs.isFile(ufsPath)) {
         UfsFileStatus ufsFileStatus = ufs.getFileStatus(ufsPath);
         if (ufsFileStatus.getContentLength() != file.getLength()
-            || (hasAnyBlockCached(mBlockMaster.getBlockInfoList(file.getBlockIds()))
-            && file.getUfsLastModificationTimeMs() != 0
-            && ufsFileStatus.getLastModifiedTime() > file.getUfsLastModificationTimeMs())) {
+            || (file.getUfsLastModificationTimeMs() != 0
+                && ufsFileStatus.getLastModifiedTime() > file.getUfsLastModificationTimeMs())) {
           LOG.info("[bdp-log] 文件校验未通过 , Path = " + ufsPath
               + " , FileSize = ["
               + file.getLength() + " , " + ufsFileStatus.getContentLength() + "]"
@@ -967,21 +966,6 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
       // Even readonly mount points should be able to complete a file, for UFS reads in CACHE mode.
       completeFileAndJournal(inodePath, options, journalContext);
     }
-  }
-
-  private boolean hasAnyBlockCached(List list) {
-    for (Object object : list) {
-      BlockInfo blockInfo = null;
-      if (object instanceof FileBlockInfo) {
-        blockInfo = ((FileBlockInfo) object).getBlockInfo();
-      } else if (object instanceof BlockInfo) {
-        blockInfo = (BlockInfo) object;
-      }
-      if (blockInfo.getLocations().size() > 0) {
-        return true;
-      }
-    }
-    return false;
   }
 
   /**
@@ -2449,8 +2433,8 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
 //            loadMetadataAndJournal(inconsistentInodePath, options, journalContext);
             syncDelete(inconsistentInodePath, options, journalContext);
           } catch (InvalidPathException e) {
-            e.printStackTrace();
-            throw new RuntimeException(e);
+            LOG.error("[extends log] syncInode : ", e);
+            return false;
           }
         }
         //loadMetadataAndJournal(inodePath, options.setLoadDirectChildren(true), journalContext);
@@ -2461,8 +2445,8 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
       }
       return false;
     } catch (Exception e) {
-      LOG.error("[extends log] loadMetadataIfNotExistAndJournal : ", e);
-      throw new RuntimeException(e);
+      LOG.error("[extends log] syncInode : ", e);
+      return false;
     }
   }
 
@@ -2474,15 +2458,6 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
               + inodePath.getUri() + " , path = " + inodePath + " , isFree.");
       mInodeTree.deleteInode(inodePath, System.currentTimeMillis(),
           DeleteOptions.defaults().setRecursive(true), journalContext);
-      long fileId = inodePath.getInode().getId();
-      long opTimeMs = System.currentTimeMillis();
-      DeleteFileEntry deleteFile = DeleteFileEntry.newBuilder()
-              .setId(fileId)
-              .setRecursive(options.isLoadDirectChildren())
-              .setOpTimeMs(opTimeMs)
-              .build();
-      appendJournalEntry(JournalEntry.newBuilder()
-          .setDeleteFile(deleteFile).build(), journalContext);
     } catch (Exception e) {
       LOG.error("loadMetadataIfNotExistAndJournal : ", e);
       throw new RuntimeException(e);
