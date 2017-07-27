@@ -742,36 +742,50 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
 
     // [辅助] 监控信息统计
     Metrics.GET_FILE_INFO_OPS.inc();
-    // [辅助] 获取元数据修改计数器
-    //long flushCounter = INVALID_FLUSH_COUNTER;
-    // 1.0 获取inodePath,检查权限,设置递归加载选项,
-    try (JournalContext journalContext = createJournalContext();
-        LockedInodePath inodePath = mInodeTree.lockInodePath(path, InodeTree.LockMode.READ)) {
-      mPermissionChecker.checkPermission(Mode.Bits.READ, inodePath);
+    List<FileInfo> ret = listStatusInternal(path, listStatusOptions, true);
+    if (ret == null) {
+      ret = listStatusInternal(path, listStatusOptions, false);
+    }
+    Metrics.FILE_INFOS_GOT.inc();
+    return ret;
+  }
 
+  private List<FileInfo> listStatusInternal(AlluxioURI path, ListStatusOptions listStatusOptions,
+                                            boolean first)
+      throws AccessControlException, FileDoesNotExistException, InvalidPathException {
+    try (JournalContext journalContext = createJournalContext();
+         LockedInodePath inodePath = mInodeTree.lockInodePath(path, InodeTree.LockMode.READ)) {
+      mPermissionChecker.checkPermission(Mode.Bits.READ, inodePath);
+      LockedInodePath curInodePath = inodePath;
       LoadMetadataOptions loadMetadataOptions =
           LoadMetadataOptions.defaults().setCreateAncestors(true).setLoadDirectChildren(
               listStatusOptions.getLoadMetadataType() != LoadMetadataType.Never);
       Inode<?> inode;
-      if (inodePath.fullPathExists()) {
-        inode = inodePath.getInode();
+      if (curInodePath.fullPathExists()) {
+        inode = curInodePath.getInode();
         if (inode.isDirectory()
             && listStatusOptions.getLoadMetadataType() != LoadMetadataType.Always
             && ((InodeDirectory) inode).isDirectChildrenLoaded()) {
           loadMetadataOptions.setLoadDirectChildren(false);
         }
       } else {
-        checkLoadMetadataOptions(listStatusOptions.getLoadMetadataType(), inodePath.getUri());
+        checkLoadMetadataOptions(listStatusOptions.getLoadMetadataType(), curInodePath.getUri());
       }
 
-      loadMetadataIfNotExistAndJournal(inodePath, loadMetadataOptions, journalContext);
-      ensureFullPathAndUpdateCache(inodePath);
-      inode = inodePath.getInode();
+      if (Configuration.getBoolean(PropertyKey.MASTER_STARTUP_LAZY_CONSISTENCY_CHECK_ENABLED)) {
+        loadMetadataOptions.setLoadDirectChildren(true);
+        if (first && syncInode(curInodePath, loadMetadataOptions, journalContext)) {
+          return null;
+        }
+      }
+      loadMetadataIfNotExistAndJournal(curInodePath, loadMetadataOptions, journalContext);
+      ensureFullPathAndUpdateCache(curInodePath);
+      inode = curInodePath.getInode();
 
       List<FileInfo> ret = new ArrayList<>();
       if (inode.isDirectory()) {
-        TempInodePathForDescendant tempInodePath = new TempInodePathForDescendant(inodePath);
-        mPermissionChecker.checkPermission(Mode.Bits.EXECUTE, inodePath);
+        TempInodePathForDescendant tempInodePath = new TempInodePathForDescendant(curInodePath);
+        mPermissionChecker.checkPermission(Mode.Bits.EXECUTE, curInodePath);
         for (Inode<?> child : ((InodeDirectory) inode).getChildren()) {
           child.lockReadAndCheckParent(inode);
           try {
@@ -783,9 +797,8 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
           }
         }
       } else {
-        ret.add(getFileInfoInternal(inodePath));
+        ret.add(getFileInfoInternal(curInodePath));
       }
-      Metrics.FILE_INFOS_GOT.inc();
       return ret;
     }
   }
@@ -856,6 +869,28 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
   }
 
   /**
+   *
+   * @param inode the inode to check
+   * @param path the current path associated with the inode
+   * @return true if the path is consistent, false otherwise
+   * @throws IOException if an error occurs interacting with the under storage
+   * @throws InvalidPathException if the path is not well formed
+   * @throws FileDoesNotExistException if the path cannot be found in the Alluxio inode tree
+   */
+  private List<AlluxioURI> checkDirChildConsistency(Inode inode, AlluxioURI path)
+      throws IOException, InvalidPathException, FileDoesNotExistException {
+    List<AlluxioURI> inconsistentUris = new ArrayList<>();
+    Set<Inode<?>> children = ((InodeDirectory) inode).getChildren();
+    for (Inode childInode : children) {
+      AlluxioURI childUri = path.join(childInode.getName());
+      if (!checkConsistencyInternal(childInode, childUri)) {
+        inconsistentUris.add(childUri);
+      }
+    }
+    return inconsistentUris;
+  }
+
+  /**
    * Checks if a path is consistent between Alluxio and the underlying storage.
    * <p>
    * A path without a backing under storage is always consistent.
@@ -879,18 +914,44 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
     UnderFileSystem ufs = resolution.getUfs();
     String ufsPath = resolution.getUri().getPath();
     if (ufs == null) {
+      LOG.info("[bdp-log] ufs is null , path " + path);
       return true;
     }
     if (!inode.isPersisted()) {
+      LOG.info("[bdp-log] ufs = " + ufs + " , " + ufsPath + " , exists = " + ufs.exists(ufsPath));
       return !ufs.exists(ufsPath);
     }
     // TODO(calvin): Evaluate which other metadata fields should be validated.
     if (inode.isDirectory()) {
-      return ufs.isDirectory(ufsPath);
+      if (!ufs.isDirectory(ufsPath)) {
+        LOG.info("[bdp-log] 文件夹校验未通过 , Path = " + ufsPath + " ufs.isDirectory() = false");
+        return false;
+      } else {
+        return true;
+      }
     } else {
       InodeFile file = (InodeFile) inode;
-      return ufs.isFile(ufsPath)
-          && ufs.getFileStatus(ufsPath).getContentLength() == file.getLength();
+      if (ufs.isFile(ufsPath)) {
+        UfsFileStatus ufsFileStatus = ufs.getFileStatus(ufsPath);
+        if (ufsFileStatus.getContentLength() != file.getLength()
+            || (file.getUfsLastModificationTimeMs() != 0
+                && ufsFileStatus.getLastModifiedTime() > file.getUfsLastModificationTimeMs())) {
+          LOG.info("[bdp-log] 文件校验未通过 , Path = " + ufsPath
+              + " , FileSize = ["
+              + file.getLength() + " , " + ufsFileStatus.getContentLength() + "]"
+              + " , curUfsModificationTime = "
+              + CommonUtils.convertMsToDate(ufsFileStatus.getLastModifiedTime())
+              + " , UfsModificationTime = "
+              + CommonUtils.convertMsToDate(file.getUfsLastModificationTimeMs())
+          );
+          return false;
+        } else {
+          return true;
+        }
+      } else {
+        LOG.info("[bdp-log] 文件校验未通过 , Path = " + ufsPath + " , isFile = false");
+        return false;
+      }
     }
   }
 
@@ -2339,7 +2400,7 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
         loadMetadataAndJournal(inodePath, options, journalContext);
       } catch (Exception e) {
         LOG.info("[extends log]  未进入更新元数据 inodeExists = " + inodeExists
-                + " loadDirectChildren = " + loadDirectChildren, e);
+            + " loadDirectChildren = " + loadDirectChildren, e);
         // NOTE, this may be expected when client tries to get info (e.g. exists()) for a file
         // existing neither in Alluxio nor UFS.
         LOG.debug("Failed to load metadata for path from UFS: {}", inodePath.getUri());
@@ -2349,90 +2410,54 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
     if (!inodePath.fullPathExists()) {
       return;
     }
-
-    if (Configuration.getBoolean(PropertyKey.MASTER_STARTUP_LAZY_CONSISTENCY_CHECK_ENABLED)) {
-      syncInode(inodePath, options, journalContext);
-    }
   }
 
-  private void syncInode(LockedInodePath inodePath,
-                               LoadMetadataOptions options, JournalContext journalContext) {
+  private boolean syncInode(LockedInodePath inodePath,
+                         LoadMetadataOptions options, JournalContext journalContext) {
     // 实现 :
     //     1. 校验alluxio inode与 ufs inode 的一致性
     //     2. 非一致性的文件夹及文件重新加载
     //  注: 即便是文件夹也仅验证两层
+
     try {
-      // 1.0 校验文件一致性
+      boolean isConsistent = true;
       if (!checkConsistencyInternal(inodePath.getInode(), inodePath.getUri())) {
-        // 1.1 文件校验未通过
-        LOG.info("[extends log] 文件[" + inodePath.getUri() + "]一致性验证未通过");
-        // 1.2 如果是文件则直接删除块及inode后, 重新加载该数据
-        if (!inodePath.getInode().isDirectory()) {
-          syncDelete(inodePath, options, journalContext);
-        } else {
-          // 1.3 如果是文件夹为通过验证, 则遍历验证的他的子文件
-          for (Inode child : ((InodeDirectory) inodePath.getInode()).getChildren()) {
-            // 1.4 组装子目录path,创建AlluxioURI对象
-            String target = null;
-            if (inodePath.getUri().toString().equals("/")) {
-              target = inodePath.getUri() + child.getName();
-            } else {
-              target = inodePath.getUri() + "/" + child.getName();
-            }
-            // 子文件url对象
-            AlluxioURI currentPath = new AlluxioURI(target);
-            // 1.5 校验目录子文件的一致性
-            if (!checkConsistencyInternal(child, currentPath)) {
-              try (LockedInodePath childInodePath = mInodeTree
-                      .lockInodePath(currentPath, InodeTree.LockMode.READ)) {
-                // 1.6 如是文件夹,直接放行
-                if (child.isDirectory()) {
-                  LOG.info("[extends log] child子节点[" + childInodePath.getUri() + "]为目录不检查");
-                } else {
-                  //1.7 如果是文件则直接删除块及inode后, 重新加载该数据
-                  LOG.info("[extends log] child子节点[" + childInodePath.getUri() + "]为文件不一致");
-                  syncDelete(childInodePath, options, journalContext);
-                }
-              } catch (InvalidPathException e) {
-                e.printStackTrace();
-                throw new RuntimeException(e);
-              }
-            }
-          }
-          try {
-            // TODO(wangzhehan) 待优化, 应该只重新加载删除的块, 不用加载目录下全部inode
-            loadMetadataAndJournal(inodePath, options, journalContext);
-          } catch (Exception e) {
-            e.printStackTrace();
-            throw new RuntimeException(e);
+        syncDelete(inodePath, options, journalContext);
+        return true;
+      } else if (inodePath.getInode().isDirectory()) {
+        List<AlluxioURI> inconsistentUris = checkDirChildConsistency(
+            inodePath.getInode(), inodePath.getUri());
+        for (AlluxioURI inconsistentUri : inconsistentUris) {
+          try (LockedInodePath inconsistentInodePath = mInodeTree
+              .lockInodePath(inconsistentUri, InodeTree.LockMode.WRITE)) {
+//            loadMetadataAndJournal(inconsistentInodePath, options, journalContext);
+            syncDelete(inconsistentInodePath, options, journalContext);
+          } catch (InvalidPathException e) {
+            LOG.error("[extends log] syncInode : ", e);
+            return false;
           }
         }
-      } else {
-        LOG.info("[extends log] 验证通过 root patch = "
-                + inodePath.getUri());
+        //loadMetadataAndJournal(inodePath, options.setLoadDirectChildren(true), journalContext);
       }
+
+      if (isConsistent) {
+        LOG.info("[extends log] 验证通过 root patch = " + inodePath.getUri());
+      }
+      return false;
     } catch (Exception e) {
-      LOG.error("[extends log] loadMetadataIfNotExistAndJournal : ", e);
-      throw new RuntimeException(e);
+      LOG.error("[extends log] syncInode : ", e);
+      return false;
     }
   }
 
   private void syncDelete(LockedInodePath inodePath,
-                                LoadMetadataOptions options, JournalContext journalContext) {
+                                     LoadMetadataOptions options, JournalContext journalContext) {
     try {
       freeAndJournal(inodePath, FreeOptions.defaults(), journalContext);
       LOG.info("[extends log] loadMetadataIfNotExistAndJournal Inode = "
               + inodePath.getUri() + " , path = " + inodePath + " , isFree.");
-      mInodeTree.deleteInode(inodePath, System.currentTimeMillis(), DeleteOptions.defaults(),
-          journalContext);
-      long fileId = inodePath.getInode().getId();
-      long opTimeMs = System.currentTimeMillis();
-      DeleteFileEntry deleteFile = DeleteFileEntry.newBuilder()
-              .setId(fileId)
-              .setRecursive(options.isLoadDirectChildren())
-              .setOpTimeMs(opTimeMs)
-              .build();
-      deleteFromEntry(deleteFile);
+      mInodeTree.deleteInode(inodePath, System.currentTimeMillis(),
+          DeleteOptions.defaults().setRecursive(true), journalContext);
     } catch (Exception e) {
       LOG.error("loadMetadataIfNotExistAndJournal : ", e);
       throw new RuntimeException(e);
