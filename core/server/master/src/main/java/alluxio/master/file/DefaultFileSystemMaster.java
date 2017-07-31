@@ -652,6 +652,17 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
          LockedInodePath inodePath = mInodeTree.lockInodePath(path, InodeTree.LockMode.WRITE)) {
       // This is WRITE locked, since loading metadata is possible.
       mPermissionChecker.checkPermission(Mode.Bits.READ, inodePath);
+      if (Configuration.getBoolean(PropertyKey.MASTER_STARTUP_LAZY_CONSISTENCY_CHECK_ENABLED)) {
+        if (syncInode(inodePath, LoadMetadataOptions.defaults().setCreateAncestors(true),
+            journalContext)) {
+          LOG.info("[bdp-log] " + path + " need relock and get the inodePath");
+        }
+      }
+    } catch (InvalidPathException e) {
+      return IdUtils.INVALID_FILE_ID;
+    }
+    try (JournalContext journalContext = createJournalContext();
+         LockedInodePath inodePath = mInodeTree.lockInodePath(path, InodeTree.LockMode.WRITE)) {
       loadMetadataIfNotExistAndJournal(inodePath,
           LoadMetadataOptions.defaults().setCreateAncestors(true), journalContext);
       mInodeTree.ensureFullInodePath(inodePath, InodeTree.LockMode.READ);
@@ -678,13 +689,21 @@ public final class DefaultFileSystemMaster extends AbstractMaster implements Fil
 
     try (JournalContext journalContext = createJournalContext();
          LockedInodePath inodePath = mInodeTree.lockInodePath(path, InodeTree.LockMode.READ)) {
+      if (Configuration.getBoolean(PropertyKey.MASTER_STARTUP_LAZY_CONSISTENCY_CHECK_ENABLED)) {
+        if (syncInode(inodePath, LoadMetadataOptions.defaults().setCreateAncestors(true),
+            journalContext)) {
+          LOG.info("[bdp-log] " + path + " need relock and get the inodePath");
+        }
+      }
+    }
+    try (JournalContext journalContext = createJournalContext();
+         LockedInodePath inodePath = mInodeTree.lockInodePath(path, InodeTree.LockMode.READ)) {
       mPermissionChecker.checkPermission(Mode.Bits.READ, inodePath);
       if (inodePath.fullPathExists()) {
         // The file already exists, so metadata does not need to be loaded.
         return getFileInfoInternal(inodePath);
       }
       checkLoadMetadataOptions(options.getLoadMetadataType(), inodePath.getUri());
-
       loadMetadataIfNotExistAndJournal(inodePath,
           LoadMetadataOptions.defaults().setCreateAncestors(true), journalContext);
       ensureFullPathAndUpdateCache(inodePath);
