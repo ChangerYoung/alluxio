@@ -54,7 +54,7 @@ function prepare_repo {
   if [[ "${delete_unrevisioned}" == true ]]; then
     git clean -qfdx
   else
-    git clean -qfdX
+    echo "keep unrevisioned files."
   fi
   rm -rf .git .gitignore
 }
@@ -115,11 +115,13 @@ function create_tarball {
 }
 
 function main {
+  local skip_build=false
   local build_all_client_profiles=true
   local delete_unrevisioned=false
   local hadoop_profile="default"
   while [[ "$#" > 0 ]]; do
     case $1 in
+      --skipBuild) skip_build=true; shift ;;
       --skipExtraClients) build_all_client_profiles=false; shift ;;
       --deleteUnrevisioned) delete_unrevisioned=true; shift ;;
       --hadoopProfile) hadoop_profile=$2; shift 2 ;;
@@ -127,7 +129,11 @@ function main {
     esac
   done
   prepare_repo ${delete_unrevisioned}
-  build ${build_all_client_profiles} ${hadoop_profile}
+  if [[ "${skip_build}" = false ]]; then
+    build ${build_all_client_profiles} ${hadoop_profile}
+  else
+    echo "skipBuild..."
+  fi
   create_tarball ${hadoop_profile}
 }
 
