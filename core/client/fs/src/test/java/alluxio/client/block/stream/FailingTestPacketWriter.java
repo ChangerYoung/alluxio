@@ -9,23 +9,24 @@
  * See the NOTICE file distributed with this work for information regarding copyright ownership.
  */
 
-package alluxio.client;
+package alluxio.client.block.stream;
 
-import alluxio.wire.WorkerNetAddress;
+import io.netty.buffer.ByteBuf;
 
-import java.net.InetSocketAddress;
+import java.io.IOException;
+import java.nio.ByteBuffer;
 
 /**
- * Something that can be located by an {@link InetSocketAddress}.
+ * A packet writer implementation which always throws an exception on writes.
  */
-public interface Locatable {
-  /**
-   * @return the network location
-   */
-  WorkerNetAddress location();
+public class FailingTestPacketWriter extends TestPacketWriter {
+  public FailingTestPacketWriter(ByteBuffer buffer) {
+    super(buffer);
+  }
 
-  /**
-   * @return true if it is local
-   */
-  boolean isLocal();
+  @Override
+  public void writePacket(ByteBuf packet) throws IOException {
+    packet.release();
+    throw new IOException();
+  }
 }
