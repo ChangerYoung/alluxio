@@ -45,7 +45,7 @@ public class CheckConsistencyCommand extends AbstractShellCommand {
 
   @Override
   public Options getOptions() {
-    return new Options().addOption(FIX_INCONSISTENT_FILES);
+    return new Options().addOption(FIX_INCONSISTENT_FILES).addOption(RECURSIVE_OPTION);
   }
 
   @Override
@@ -57,13 +57,27 @@ public class CheckConsistencyCommand extends AbstractShellCommand {
   public int run(CommandLine cl) throws AlluxioException, IOException {
     String[] args = cl.getArgs();
     AlluxioURI root = new AlluxioURI(args[0]);
-    checkConsistency(root, cl.hasOption("r"));
+    checkConsistency(root, cl.hasOption("r"),cl.hasOption("R"));
     return 0;
   }
 
-  private void checkConsistency(AlluxioURI path, boolean repairConsistency) throws
+  private void checkConsistency(AlluxioURI path, boolean repairConsistency,boolean recursion) throws
       AlluxioException, IOException {
     CheckConsistencyOptions options = CheckConsistencyOptions.defaults();
+    URIStatus rootstatus = mFileSystem.getStatus(path);
+    if(recursion && rootstatus.isFolder()){
+      List<URIStatus> statuses;
+      try {
+        statuses = mFileSystem.listStatus(path);
+      } catch (AlluxioException e) {
+        throw new IOException(e.getMessage());
+      }
+      for (URIStatus uriStatus : statuses) {
+        AlluxioURI lowerPath = new AlluxioURI(uriStatus.getPath());
+        checkConsistency(lowerPath,repairConsistency,recursion);
+      }
+      return;
+    }
     List<AlluxioURI> inconsistentUris = FileSystemUtils.checkConsistency(path, options);
     if (inconsistentUris.isEmpty()) {
       System.out.println(path + " is consistent with the under storage system.");
@@ -107,7 +121,7 @@ public class CheckConsistencyCommand extends AbstractShellCommand {
 
   @Override
   public String getUsage() {
-    return "checkConsistency [-r] <Alluxio path>";
+    return "checkConsistency [-r] [-R] <Alluxio path>";
   }
 
   @Override
